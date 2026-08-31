@@ -113,6 +113,7 @@ rrMultiple     = input.float(1.5, "Take-Profit als Vielfaches des Stop-Abstands 
 useAtrStop     = input.bool(false, "ATR-Stop statt OR-basiertem Stop verwenden", group = grpEntry)
 intradayAtrLen = input.int(14, "Intraday-ATR-Length (fuer ATR-Stop)", group = grpEntry)
 atrStopMult    = input.float(1.0, "ATR-Stop-Multiplikator", minval = 0.1, step = 0.1, group = grpEntry)
+maxTradesPerDay = input.int(1, "Max. Trades pro Tag", minval = 1, maxval = 10, group = grpEntry)
 
 intradayAtr = ta.atr(intradayAtrLen)
 
@@ -121,12 +122,12 @@ intradayAtr = ta.atr(intradayAtrLen)
 // ---------------------------------------------------------------------------
 var float orHigh = na
 var float orLow  = na
-var bool  tradeTakenToday = false
+var int   tradesToday = 0
 
 if newDay
     orHigh := na
     orLow  := na
-    tradeTakenToday := false
+    tradesToday := 0
 
 if isOpeningRangeBar
     orHigh := na(orHigh) ? high : math.max(orHigh, high)
@@ -144,10 +145,10 @@ longBreak  = requireClose ? close > orHigh + bufferPoints : high > orHigh + buff
 shortBreak = requireClose ? close < orLow  - bufferPoints : low  < orLow  - bufferPoints
 
 longCondition = isTradingWindow and orReady and orSizeOk and volOk and longTrendOk and momUp and dowOk and
-     not tradeTakenToday and strategy.position_size == 0 and longBreak
+     tradesToday < maxTradesPerDay and strategy.position_size == 0 and longBreak
 
 shortCondition = isTradingWindow and orReady and orSizeOk and volOk and shortTrendOk and momDown and dowOk and
-     not tradeTakenToday and strategy.position_size == 0 and shortBreak
+     tradesToday < maxTradesPerDay and strategy.position_size == 0 and shortBreak
 
 // ---------------------------------------------------------------------------
 // Orders
@@ -159,7 +160,7 @@ if longCondition
         tpPrice = close + slDist * rrMultiple
         strategy.entry("ORB Long", strategy.long)
         strategy.exit("Exit Long", "ORB Long", stop = slPrice, limit = tpPrice)
-        tradeTakenToday := true
+        tradesToday += 1
 
 if shortCondition
     slPrice = useAtrStop ? close + atrStopMult * intradayAtr : orHigh + bufferPoints
@@ -168,7 +169,7 @@ if shortCondition
         tpPrice = close - slDist * rrMultiple
         strategy.entry("ORB Short", strategy.short)
         strategy.exit("Exit Short", "ORB Short", stop = slPrice, limit = tpPrice)
-        tradeTakenToday := true
+        tradesToday += 1
 
 // Zwangsschliessung zur konfigurierten Uhrzeit (kein Overnight-Halten)
 if isFlatTime and strategy.position_size != 0
