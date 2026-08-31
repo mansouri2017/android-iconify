@@ -1,0 +1,185 @@
+//@version=5
+strategy("US100 ORB (Filtered) - Backtest Only",
+     shorttitle = "US100-ORB-BT",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 3,
+     pyramiding = 0)
+
+// ============================================================================
+// Dieses Skript ist AUSSCHLIESSLICH fuer den TradingView Strategie-Tester
+// (Backtest) gedacht. Es sendet keine Alerts/Webhooks. Erst nach Pruefung
+// gegen die Phase-4-Kriterien sinnvoll fuer Live-/Signal-Nutzung erweitern.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Session / Opening Range
+// ---------------------------------------------------------------------------
+grpSession = "Opening Range / Session"
+tz              = input.string("America/New_York", "Session-Zeitzone", group = grpSession)
+sessStartHour   = input.int(9, "Session-Start Stunde", minval = 0, maxval = 23, group = grpSession)
+sessStartMinute = input.int(30, "Session-Start Minute", minval = 0, maxval = 59, group = grpSession)
+orMinutes       = input.int(15, "Opening-Range-Laenge (Minuten)", minval = 5, group = grpSession)
+flatHour        = input.int(15, "Flat-by Stunde (Positionen zwangsschliessen)", minval = 0, maxval = 23, group = grpSession)
+flatMinute      = input.int(45, "Flat-by Minute", minval = 0, maxval = 59, group = grpSession)
+
+curHour   = hour(time, tz)
+curMinute = minute(time, tz)
+curMinOfDay = curHour * 60 + curMinute
+sessStartMinOfDay = sessStartHour * 60 + sessStartMinute
+orEndMinOfDay      = sessStartMinOfDay + orMinutes
+flatMinOfDay       = flatHour * 60 + flatMinute
+
+isOpeningRangeBar = curMinOfDay >= sessStartMinOfDay and curMinOfDay < orEndMinOfDay
+isTradingWindow   = curMinOfDay >= orEndMinOfDay and curMinOfDay < flatMinOfDay
+isFlatTime        = curMinOfDay >= flatMinOfDay
+
+newDay = dayofmonth(time, tz) != dayofmonth(time[1], tz)
+
+// ---------------------------------------------------------------------------
+// Filter: Opening-Range-Groesse (ATR-basiert, verhindert zu enge/zu weite Ranges)
+// ---------------------------------------------------------------------------
+grpOrFilter = "Filter: Opening-Range-Groesse"
+useOrSizeFilter = input.bool(true, "OR-Groessenfilter aktivieren", group = grpOrFilter)
+dailyAtrLen      = input.int(14, "Taeglicher ATR-Length", group = grpOrFilter)
+minOrAtrMult     = input.float(0.15, "Min. OR-Groesse (x Tages-ATR)", minval = 0.0, step = 0.05, group = grpOrFilter)
+maxOrAtrMult     = input.float(0.60, "Max. OR-Groesse (x Tages-ATR)", minval = 0.1, step = 0.05, group = grpOrFilter)
+
+dailyAtr = request.security(syminfo.tickerid, "D", ta.atr(dailyAtrLen)[1])
+
+// ---------------------------------------------------------------------------
+// Filter: Volumen
+// ---------------------------------------------------------------------------
+grpVolFilter = "Filter: Volumen"
+useVolFilter = input.bool(true, "Volumenfilter aktivieren (bei CFD-Feed ggf. deaktivieren)", group = grpVolFilter)
+volMaLen     = input.int(20, "Volumen-MA-Length", group = grpVolFilter)
+volMult      = input.float(1.2, "Mindest-Vielfaches des Volumen-MA", minval = 0.5, step = 0.1, group = grpVolFilter)
+
+volOk = not useVolFilter or (volume > ta.sma(volume, volMaLen) * volMult)
+
+// ---------------------------------------------------------------------------
+// Filter: Hoehere-Zeitebene-Trend (HTF)
+// ---------------------------------------------------------------------------
+grpTrendFilter = "Filter: HTF-Trend"
+useTrendFilter = input.bool(true, "HTF-Trendfilter aktivieren", group = grpTrendFilter)
+trendTf        = input.timeframe("60", "Trend-Zeitebene", group = grpTrendFilter)
+trendEmaLen    = input.int(50, "Trend-EMA-Length", group = grpTrendFilter)
+
+trendEma = request.security(syminfo.tickerid, trendTf, ta.ema(close, trendEmaLen)[1])
+longTrendOk  = not useTrendFilter or close > trendEma
+shortTrendOk = not useTrendFilter or close < trendEma
+
+// ---------------------------------------------------------------------------
+// Filter: Intraday-Momentum-Richtung (Vormittags-Move als Richtungsbestaetigung,
+// angelehnt an Gao/Han/Li/Zhou "Market Intraday Momentum")
+// ---------------------------------------------------------------------------
+grpMomFilter = "Filter: Intraday-Momentum-Richtung"
+useMomFilter = input.bool(false, "Momentum-Richtungsfilter aktivieren", group = grpMomFilter)
+
+var float sessionOpenPrice = na
+if isOpeningRangeBar and (na(sessionOpenPrice) or newDay)
+    sessionOpenPrice := open
+momUp   = not useMomFilter or (not na(sessionOpenPrice) and close > sessionOpenPrice)
+momDown = not useMomFilter or (not na(sessionOpenPrice) and close < sessionOpenPrice)
+
+// ---------------------------------------------------------------------------
+// Filter: Wochentag
+// ---------------------------------------------------------------------------
+grpDow = "Filter: Wochentag"
+tradeMon = input.bool(true,  "Montag handeln", group = grpDow)
+tradeTue = input.bool(true,  "Dienstag handeln", group = grpDow)
+tradeWed = input.bool(true,  "Mittwoch handeln", group = grpDow)
+tradeThu = input.bool(true,  "Donnerstag handeln", group = grpDow)
+tradeFri = input.bool(false, "Freitag handeln", group = grpDow)
+
+dow = dayofweek(time, tz)
+dowOk = (dow == dayofweek.monday    and tradeMon) or
+         (dow == dayofweek.tuesday   and tradeTue) or
+         (dow == dayofweek.wednesday and tradeWed) or
+         (dow == dayofweek.thursday  and tradeThu) or
+         (dow == dayofweek.friday    and tradeFri)
+
+// ---------------------------------------------------------------------------
+// Entry / Risk-Parameter
+// ---------------------------------------------------------------------------
+grpEntry = "Entry / Risk"
+bufferPoints   = input.float(2.0, "Breakout-Puffer (Indexpunkte)", minval = 0.0, step = 0.5, group = grpEntry)
+requireClose   = input.bool(true, "Bar-Close jenseits OR verlangen (statt reinem Docht-Durchbruch)", group = grpEntry)
+rrMultiple     = input.float(1.5, "Take-Profit als Vielfaches des Stop-Abstands (R)", minval = 0.5, step = 0.1, group = grpEntry)
+useAtrStop     = input.bool(false, "ATR-Stop statt OR-basiertem Stop verwenden", group = grpEntry)
+intradayAtrLen = input.int(14, "Intraday-ATR-Length (fuer ATR-Stop)", group = grpEntry)
+atrStopMult    = input.float(1.0, "ATR-Stop-Multiplikator", minval = 0.1, step = 0.1, group = grpEntry)
+
+intradayAtr = ta.atr(intradayAtrLen)
+
+// ---------------------------------------------------------------------------
+// Opening Range Tracking
+// ---------------------------------------------------------------------------
+var float orHigh = na
+var float orLow  = na
+var bool  tradeTakenToday = false
+
+if newDay
+    orHigh := na
+    orLow  := na
+    tradeTakenToday := false
+
+if isOpeningRangeBar
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow, low)
+
+orReady = not na(orHigh) and not na(orLow)
+orSize  = orReady ? (orHigh - orLow) : na
+orSizeOk = not useOrSizeFilter or (orReady and not na(dailyAtr) and
+     orSize >= minOrAtrMult * dailyAtr and orSize <= maxOrAtrMult * dailyAtr)
+
+// ---------------------------------------------------------------------------
+// Breakout-Bedingungen
+// ---------------------------------------------------------------------------
+longBreak  = requireClose ? close > orHigh + bufferPoints : high > orHigh + bufferPoints
+shortBreak = requireClose ? close < orLow  - bufferPoints : low  < orLow  - bufferPoints
+
+longCondition = isTradingWindow and orReady and orSizeOk and volOk and longTrendOk and momUp and dowOk and
+     not tradeTakenToday and strategy.position_size == 0 and longBreak
+
+shortCondition = isTradingWindow and orReady and orSizeOk and volOk and shortTrendOk and momDown and dowOk and
+     not tradeTakenToday and strategy.position_size == 0 and shortBreak
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+if longCondition
+    slPrice = useAtrStop ? close - atrStopMult * intradayAtr : orLow - bufferPoints
+    slDist  = close - slPrice
+    if slDist > 0
+        tpPrice = close + slDist * rrMultiple
+        strategy.entry("ORB Long", strategy.long)
+        strategy.exit("Exit Long", "ORB Long", stop = slPrice, limit = tpPrice)
+        tradeTakenToday := true
+
+if shortCondition
+    slPrice = useAtrStop ? close + atrStopMult * intradayAtr : orHigh + bufferPoints
+    slDist  = slPrice - close
+    if slDist > 0
+        tpPrice = close - slDist * rrMultiple
+        strategy.entry("ORB Short", strategy.short)
+        strategy.exit("Exit Short", "ORB Short", stop = slPrice, limit = tpPrice)
+        tradeTakenToday := true
+
+// Zwangsschliessung zur konfigurierten Uhrzeit (kein Overnight-Halten)
+if isFlatTime and strategy.position_size != 0
+    strategy.close_all("Flat-by-Time")
+
+// ---------------------------------------------------------------------------
+// Visualisierung
+// ---------------------------------------------------------------------------
+plot(orReady ? orHigh : na, title = "OR High", color = color.new(color.green, 0), style = plot.style_linebr, linewidth = 1)
+plot(orReady ? orLow  : na, title = "OR Low",  color = color.new(color.red, 0),   style = plot.style_linebr, linewidth = 1)
+plot(useTrendFilter ? trendEma : na, title = "HTF Trend EMA", color = color.new(color.orange, 0))
+
+bgcolor(isOpeningRangeBar ? color.new(color.blue, 90) : na, title = "Opening Range Fenster")
+bgcolor(isTradingWindow ? color.new(color.gray, 95) : na, title = "Trading-Fenster")
