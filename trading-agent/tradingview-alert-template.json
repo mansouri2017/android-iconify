@@ -1,0 +1,8 @@
+{
+  "_comment": "Alert-Message-Vorlage fuer TradingView (Menu: Alert erstellen > Nachricht). {{close}}, {{time}} werden von TradingView automatisch ersetzt. TP/SL werden NICHT hier berechnet (TradingView kann in der Nachricht nicht rechnen), sondern im n8n-Workflow anhand von TP_POINTS/SL_POINTS.",
+  "secret": "DEIN_WEBHOOK_SECRET",
+  "symbol": "US100",
+  "action": "buy",
+  "price": "{{close}}",
+  "time": "{{time}}"
+}

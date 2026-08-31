@@ -1,0 +1,179 @@
+{
+  "name": "US100 TradingView -> Telegram Signal Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "us100-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1f1a9a2e-0001-4a3d-9a2a-000000000001",
+      "name": "TradingView Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        0
+      ],
+      "webhookId": "us100-alert"
+    },
+    {
+      "parameters": {
+        "jsSourceCode": "const body = $input.first().json.body ?? $input.first().json;\n\nconst expectedSecret = $env.WEBHOOK_SECRET || '';\nconst allowedSymbols = ['US100', 'NAS100', 'USTEC', 'NASDAQ:NDX', 'USATECHIDXUSD'];\nconst tpPoints = Number($env.TP_POINTS || 50);\nconst slPoints = Number($env.SL_POINTS || 25);\n\nconst errors = [];\n\nif (!body || typeof body !== 'object') {\n  errors.push('Kein gueltiger JSON-Body empfangen.');\n}\n\nif (expectedSecret && body.secret !== expectedSecret) {\n  errors.push('Ungueltiges oder fehlendes Secret.');\n}\n\nconst symbol = (body.symbol || '').toString().toUpperCase();\nif (!allowedSymbols.includes(symbol)) {\n  errors.push(`Symbol '${symbol}' ist nicht freigegeben (erlaubt: ${allowedSymbols.join(', ')}).`);\n}\n\nconst action = (body.action || '').toString().toLowerCase();\nif (!['buy', 'sell', 'long', 'short'].includes(action)) {\n  errors.push(`Unbekannte Order-Richtung '${action}'.`);\n}\n\nconst price = Number(body.price);\nif (!Number.isFinite(price)) errors.push('price fehlt oder ist keine Zahl.');\n\nif (errors.length > 0) {\n  return [{\n    json: {\n      valid: false,\n      errors,\n      rawBody: body\n    }\n  }];\n}\n\nconst isLong = ['buy', 'long'].includes(action);\nconst directionLabel = isLong ? 'LONG' : 'SHORT';\nconst emoji = isLong ? '\ud83d\udfe2' : '\ud83d\udd34';\n\n// TP/SL werden hier berechnet, da TradingView-Alert-Nachrichten keine Arithmetik unterstuetzen.\nconst tp = isLong ? price + tpPoints : price - tpPoints;\nconst sl = isLong ? price - slPoints : price + slPoints;\nconst riskRewardRatio = slPoints > 0 ? (tpPoints / slPoints).toFixed(2) : 'n/a';\n\nconst message = [\n  `${emoji} *US100 ${directionLabel} Signal*`,\n  '',\n  `Symbol: \\`${symbol}\\``,\n  `Entry: \\`${price}\\``,\n  `TP: \\`${tp}\\` (+${tpPoints} Punkte)`,\n  `SL: \\`${sl}\\` (-${slPoints} Punkte)`,\n  `CRV: \\`${riskRewardRatio}\\``,\n  '',\n  `Zeit: ${body.time || new Date().toISOString()}`\n].join('\\n');\n\nreturn [{\n  json: {\n    valid: true,\n    symbol,\n    action: directionLabel,\n    price,\n    tp,\n    sl,\n    riskRewardRatio,\n    message\n  }\n}];"
+      },
+      "id": "1f1a9a2e-0002-4a3d-9a2a-000000000002",
+      "name": "Validate & Format Signal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b8f3f7a0-0000-0000-0000-000000000001",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1f1a9a2e-0003-4a3d-9a2a-000000000003",
+      "name": "Signal gueltig?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "1f1a9a2e-0004-4a3d-9a2a-000000000004",
+      "name": "Telegram: Signal senden",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        420,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIAL_ID",
+          "name": "Telegram Trading Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'ok', message: 'Signal an Telegram gesendet' } }}",
+        "options": {}
+      },
+      "id": "1f1a9a2e-0005-4a3d-9a2a-000000000005",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        640,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 400,
+        "responseBody": "={{ { status: 'error', errors: $json.errors } }}",
+        "options": {}
+      },
+      "id": "1f1a9a2e-0006-4a3d-9a2a-000000000006",
+      "name": "Respond Fehler",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        420,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "TradingView Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Format Signal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Format Signal": {
+      "main": [
+        [
+          {
+            "node": "Signal gueltig?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signal gueltig?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Signal senden",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Fehler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Signal senden": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

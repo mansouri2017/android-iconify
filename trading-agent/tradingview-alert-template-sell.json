@@ -1,0 +1,8 @@
+{
+  "_comment": "Alert-Message-Vorlage fuer einen SHORT/SELL-Einstieg. Gleiche Logik wie tradingview-alert-template.json, nur action=sell.",
+  "secret": "DEIN_WEBHOOK_SECRET",
+  "symbol": "US100",
+  "action": "sell",
+  "price": "{{close}}",
+  "time": "{{time}}"
+}
