@@ -88,20 +88,50 @@ class Trade:
 # ---------------------------------------------------------------------------
 # Datenaufbereitung
 # ---------------------------------------------------------------------------
-def load_csv(path: str, tz: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
-    required = {"time", "open", "high", "low", "close"}
+def load_csv(path: str, tz: str, broker_tz: str | None = None) -> pd.DataFrame:
+    """
+    Liest sowohl TradingView-Exporte (eine 'time'-Spalte mit vollem Datum)
+    als auch MT5-History-Center-Exporte (getrennte <DATE>/<TIME>-Spalten,
+    tab-getrennt, <TICKVOL>/<VOL> statt 'volume').
+
+    broker_tz: Zeitzone, in der die Zeitstempel im CSV vorliegen (z.B. die
+    Serverzeit deines MT5-Brokers, oft 'EET'/'Etc/GMT-2' o.ae. -- im MT5
+    Terminal meist unten rechts oder unter Extras > Optionen > Server
+    einsehbar). Wird auf 'tz' (Session-Zeitzone, Standard America/New_York)
+    umgerechnet. Ohne Angabe wird angenommen, die Zeitstempel liegen schon
+    in 'tz' vor (Standardfall bei TradingView-Exporten mit Zeitzonen-Option).
+    """
+    df = pd.read_csv(path, sep=None, engine="python")
+    df.columns = [c.strip().strip("<>").lower() for c in df.columns]
+
+    if "date" in df.columns and "time" in df.columns and df["date"].astype(str).str.len().median() <= 10:
+        # MT5-Format: getrennte Datum/Zeit-Spalten -> zusammenfuehren
+        df["time"] = pd.to_datetime(
+            df["date"].astype(str).str.replace(".", "-", regex=False) + " " + df["time"].astype(str),
+            utc=False,
+        )
+        df = df.drop(columns=["date"])
+    elif "time" in df.columns:
+        df["time"] = pd.to_datetime(df["time"], utc=False)
+    else:
+        raise ValueError("CSV hat weder eine 'time'-Spalte noch getrennte 'date'/'time'-Spalten (MT5-Format).")
+
+    required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"CSV fehlen Spalten: {missing}")
-    if "volume" not in df.columns:
-        df["volume"] = np.nan
 
-    df["time"] = pd.to_datetime(df["time"], utc=False)
+    if "volume" not in df.columns or df["volume"].fillna(0).eq(0).all():
+        if "tickvol" in df.columns:
+            df["volume"] = df["tickvol"]  # Tick-Volumen als Proxy (bei Index-CFDs ueblich, echtes Volumen meist 0)
+        elif "vol" in df.columns:
+            df["volume"] = df["vol"]
+        elif "volume" not in df.columns:
+            df["volume"] = np.nan
+
     if df["time"].dt.tz is None:
-        df["time"] = df["time"].dt.tz_localize(tz)
-    else:
+        df["time"] = df["time"].dt.tz_localize(broker_tz or tz)
+    if broker_tz:
         df["time"] = df["time"].dt.tz_convert(tz)
 
     df = df.sort_values("time").drop_duplicates("time").reset_index(drop=True)
@@ -351,8 +381,9 @@ def make_synthetic_data(days: int = 40, seed: int = 7) -> pd.DataFrame:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", type=str, help="Pfad zur OHLCV-CSV (time,open,high,low,close,volume)")
-    ap.add_argument("--tz", type=str, default="America/New_York")
+    ap.add_argument("--csv", type=str, help="Pfad zur OHLCV-CSV (TradingView- oder MT5-Export)")
+    ap.add_argument("--tz", type=str, default="America/New_York", help="Session-Zeitzone fuer die Opening-Range-Logik")
+    ap.add_argument("--broker-tz", type=str, default=None, help="Zeitzone der CSV-Zeitstempel, falls abweichend von --tz (z.B. bei MT5-Serverzeit)")
     ap.add_argument("--ablation", action="store_true", help="Filter-Ablation-Grid ausfuehren")
     ap.add_argument("--self-test", action="store_true", help="Nur Code-Smoketest mit synthetischen Zufallsdaten")
     ap.add_argument("--out", type=str, default="ablation_results.csv")
@@ -369,7 +400,7 @@ def main():
     if not args.csv:
         raise SystemExit("Bitte --csv <pfad> angeben (oder --self-test fuer den Code-Smoketest).")
 
-    df = load_csv(args.csv, args.tz)
+    df = load_csv(args.csv, args.tz, broker_tz=args.broker_tz)
     print(f"Geladen: {len(df)} Bars, {df.index[0]} bis {df.index[-1]}")
 
     if args.ablation:
